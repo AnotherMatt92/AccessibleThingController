@@ -26,7 +26,7 @@
  *  Configuration
  * ========================================================================== */
 
-#define VERSION           "0.1"
+#define VERSION           "0.2"
 #define EEPROM_MAGIC      2  // update to clear EEPROM on restart
 #define THING_ID          "1A9E3D66-E90F-11E5-83C1-1E346D398B53"
 #define THING_NAME        "DOOR"
@@ -79,8 +79,10 @@ typedef uint8_t TOKEN[7];
 
 // flags for TOKEN_CACHE_ITEM
 #define TOKEN_ACCESS    0x01
-#define TOKEN_TRAINER   0x02
-#define TOKEN_ERROR     0x04
+#define TOKEN_CACHE   0x02
+#define TOKEN_ERROR     0x84
+#define TOKEN_PARSE_ERROR  0x80
+#define TOKEN_WIFI_ERROR   0x80
 
 // struct for items in the token cache
 struct TOKEN_CACHE_ITEM {
@@ -203,7 +205,7 @@ uint8_t queryServer(String cardID) {
    // check if connected
    if ( WiFi.status() != WL_CONNECTED ) {
      //Serial.println("Error: WiFi Not Connected");
-     return TOKEN_ERROR;
+     return TOKEN_WIFI_ERROR;
    }
 
    //Serial.print("Querying server: ");
@@ -232,11 +234,14 @@ uint8_t queryServer(String cardID) {
                 "Host: " + host + "\r\n" +
                 "Connection: close\r\n\r\n");
    int checkCounter = 0;
+    Serial.println(String("GET ") + url + " HTTP/1.1\r\n" +
+                "Host: " + host + "\r\n" +
+                "Connection: close\r\n\r\n");
    while (!client.available() && checkCounter < 3000) {
      delay(10);
      checkCounter++;
    }
-
+  
    // Read reply and decode json
    if (client.available()) {
      while(client.available()){
@@ -247,40 +252,63 @@ uint8_t queryServer(String cardID) {
          // feed the watchdog
          yield();
          json = client.readStringUntil('\n');
-         //Serial.print("_");
-         //Serial.print(json);
+
          if (json == "") endOfHeaders = true;
        }
+       Serial.println("json in bound");
+       Serial.println(json);
        //Serial.println("json:");
        //Serial.println(json);
   
-       StaticJsonBuffer<200> jsonBuffer;
-  
-       JsonObject& root = jsonBuffer.parseObject(json);
-  
-       // Test if parsing succeeds.
-       if (!root.success()) {
-         Serial.println("Error: Couldn't parse JSON");
-         return TOKEN_ERROR;
+//       StaticJsonDocument<200> jsonBuffer;
+       DynamicJsonDocument jsonBuffer(1024);
+       deserializeJson(jsonBuffer,json);
+       JsonObject root = jsonBuffer.as<JsonObject>();
+       Serial.println("printing json");
+       for (JsonPair keyvalue : root){
+        Serial.println(keyvalue.key().c_str());
        }
-
+       //Serial.println(root);
+       flags = 0;
+       // Test if parsing succeeds.
+       if (root.isNull()) {
+         Serial.println("Error: Couldn't parse JSON");
+         return TOKEN_PARSE_ERROR;
+       }
+       Serial.println("JSON recieved and parsed");
        if (!root.containsKey("access")) {
          Serial.println("Error: No access info");
-         return TOKEN_ERROR;
+         //return TOKEN_PARSE_ERROR;
        }
-       
        // Check json response for access permission
-       if (root["access"] == 1) {
+       //If access allowed
+       if (root["access"] == 1) { //if access allowed
          flags |= TOKEN_ACCESS;
        }
-  
-       if (root["trainer"] == 1) {
-         flags |= TOKEN_TRAINER;
+       if (root.containsKey("cache")){
+         if (root["cache"] == 1) { //dont  cache if weekend member
+           flags |= TOKEN_CACHE; //or assign
+         }
        }
+       if (root.containsKey("colour")){
+          int f = root["colour"].as<int>();
+          flags  |= root["colour"].as<int>()*4; //value between 0-63
+          Serial.print("Found Color  ");
+          Serial.println(String(f));
+       } else
+       { Serial.println("Error: No colour info"); }
+      
+//       if (root["colour"] == ){
+//        
+//       }
+//       if (root["trainer"] == 1) {
+//         flags |= TOKEN_TRAINER;
+//       }
+       return flags;
      }
      
    } else {
-    flags = TOKEN_ERROR;
+    flags = TOKEN_WIFI_ERROR;
    }
 
    // close connection
@@ -410,7 +438,7 @@ void handleSerial() {
     if (inputString[0] == '?') {
       uint8_t v = queryServer(inputString.substring(1));
       Serial.print('?');
-      Serial.println(v);
+      Serial.println(char(v));
     } else if (inputString[0] == '!') {
       // log message
       sendLogMsg(inputString.substring(1));
