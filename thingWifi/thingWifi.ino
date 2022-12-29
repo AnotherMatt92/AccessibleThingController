@@ -248,12 +248,14 @@ uint8_t queryServer(String cardID) {
        // TODO: Replace with better/more robust streaming HTTP header parser
        String json;
        boolean endOfHeaders = false;
-       while (!endOfHeaders && client.available()) {
+       int counter = 0;
+       while (!endOfHeaders && client.available() && counter < 1024) {//counter breaks loop to prevent hanging
          // feed the watchdog
          yield();
          json = client.readStringUntil('\n');
 
          if (json == "") endOfHeaders = true;
+          counter++;
        }
        Serial.println("json in bound");
        Serial.println(json);
