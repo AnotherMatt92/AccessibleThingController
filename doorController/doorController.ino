@@ -1,9 +1,12 @@
+
+
 //#include <pin_magic.h>
 //#include <registers.h>
 
 #include <Wire.h>
-#include <PN532_I2C.h>
-#include <PN532.h>
+//#include "PN532_I2C.h"
+//#include <PN532.h> //replaced by newer one below
+#include <Adafruit_PN532.h>
 #include <TaskScheduler.h>
 #include <EEPROM.h>
 #include <Adafruit_NeoPixel.h>
@@ -36,7 +39,7 @@
 #define ESP_RESET_PIN     12
 
 #define DEBUG_CAPSENSE
-
+#define NUM_LEDS 24
 /* ========================================================================== *
  *  Enums
  * ========================================================================== */
@@ -63,6 +66,37 @@
 
 #define MAXINPUTCHARS   20   // size of ESP serial incoming buffer
 
+#define COLOR_RED     strip.Color(255,0,0)
+#define COLOR_GREEN   strip.Color(0,255,0)
+#define COLOR_BLUE    strip.Color(0,0,255)
+#define COLOR_WHITE   strip.Color(255,255,255)
+#define COLOR_PURPLE  strip.Color(255,0,255)
+#define COLOR_YELLOW  strip.Color(255,255,0)
+#define COLOR_PINK    strip.Color(255,100,200)
+#define COLOR_ORANGE  strip.Color(245,100,10)
+#define COLOR_OFF     strip.Color(0,0,0)
+
+
+#define PATTERN_WHITE    0
+#define PATTERN_GREEN    1
+#define PATTERN_PURPLE   2
+#define PATTERN_BLUE     3
+#define PATTERN_PINK     4
+#define PATTERN_ORANGE   5
+#define PATTERN_RAINBOW  17
+#define PATTERN_PYB      18
+#define PATTERN_FWHITE    24
+#define PATTERN_FGREEN    25
+#define PATTERN_FPURPLE   26
+#define PATTERN_FBLUE     27
+#define PATTERN_FPINK     28
+#define PATTERN_FORANGE   29
+#define PATTERN_RED       32
+#define PATTERN_REDBLUE     33
+#define PATTERN_REDORANGE   34
+#define PATTERN_REDGREEN    35
+#define PATTERN_REDPURPLE   36
+#define PATTERN_REDPINK     37
 
 /* ========================================================================== *
  *  Types / Structures
@@ -72,7 +106,7 @@
   * struct for token cache
   * token - 7 bytes
   * length - unsigned byte - length of token
-  * flags - 1 byte, encodes permission and trainer status
+  * flags - 1 byte, encodes permission (bit0) and cache status (bit1) and color code (bit 2-7)
   * scan count - 2 bytes (unsigned int) - number of scans
   *
   * cache is fixed sized array
@@ -128,8 +162,9 @@ void syncEEPROM();
  *  Global Variables / Objects
  * ========================================================================== */
 
-PN532_I2C pn532i2c(Wire, I2C_DATA_PIN, I2C_CLOCK_PIN);  // data, clock
-PN532 nfc(pn532i2c);
+//PN532_I2C pn532i2c(Wire, I2C_DATA_PIN, I2C_CLOCK_PIN);  // data, clock
+Adafruit_PN532 nfc(I2C_DATA_PIN, PN532_RESET_PIN);
+//PN532 nfc(pn532i2c);
 uint16_t PN532Resets = 0;  // reset counter
 
 // ESP serial
@@ -147,7 +182,7 @@ uint8_t cacheSize = 0;
 uint8_t inputChars = 0;
 String inputString;
 boolean stringComplete = false;  // whether the string is complete
-
+uint8_t colorPattern = 0; //current pattern its displaying
 // tasks
 Task ESPConnectionTask(ESP_CONNECTION_TASK_INTERVAL, TASK_FOREVER, &keepESPConnected);
 Task RFIDConnectionTask(RFID_CONNECTION_TASK_INTERVAL, TASK_FOREVER, &keepRFIDConnected);
@@ -168,7 +203,7 @@ unsigned long unlockCount = 0;
 boolean exitPressed = false;
 
 // neopixel
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(24, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 // doorbell
 unsigned long doorbellTimer = 0;
@@ -261,21 +296,103 @@ inline int clamp(int v, int minV, int maxV) {
  *  NEOPIXEL
  * ========================================================================== */
 
-void colorWipe(uint32_t c, uint8_t wait) {
+void colorWipe(uint8_t pattern) {
+  colorPattern = pattern;
+  Serial.print(F("Setting Pattern to "));  Serial.println(colorPattern);
   for(uint16_t i=0; i<strip.numPixels(); i++) {
-    strip.setPixelColor(i, c);
-    if (wait >0 ) {
-      strip.show();
-      delay(wait);
-    }
+        
+    strip.setPixelColor(i, flag2color(pattern,i));
+    // if (wait >0 ) {
+    //   strip.show();
+    //   delay(wait);
+    // }
   }
-  if (wait == 0) {
+  //if (show) { //sometimes dont want to show as we will still changing some of the pixels with segments() or sprial()
     strip.show();
-  }
+  //}
 }
 
-void segment(uint32_t c1, uint32_t c2, int start, int end) {
+
+uint32_t flag2color(uint8_t pattern, int pos) {
+  //patterns from the 6 bit code
+  uint8_t val = pos % 24;
+  switch (pattern){
+    case PATTERN_WHITE: //solid white
+      return(COLOR_WHITE);
+    case PATTERN_GREEN: //solid green
+      return(COLOR_GREEN);
+    case PATTERN_PURPLE: //solid purple
+      return(COLOR_PURPLE);
+    case PATTERN_BLUE: //solid blue
+      return(COLOR_BLUE);
+    case PATTERN_PINK: //solid pink
+      return(COLOR_PINK);
+    case PATTERN_ORANGE: //solid orange
+      return(COLOR_ORANGE);
+    case PATTERN_RAINBOW: //rainbow spiral
+      switch (val>>2){
+        case 1: return(COLOR_RED);
+        case 2: return(COLOR_ORANGE);
+        case 3: return(COLOR_YELLOW);
+        case 4: return(COLOR_GREEN);
+        case 5: return(COLOR_BLUE);      
+        default: return(COLOR_PURPLE);
+      }
+    case PATTERN_PYB: //PYB spiral
+      switch (val/8){
+        case 0: return (COLOR_PINK);      
+        case 1: return (COLOR_ORANGE);  
+        default: return (COLOR_BLUE);      
+      }
+    case PATTERN_FWHITE: //flash white
+      return(COLOR_WHITE);
+    case PATTERN_FGREEN: //flash green
+      return(COLOR_GREEN);
+    case PATTERN_FPURPLE: //flash purple
+      return(COLOR_PURPLE);
+    case PATTERN_FBLUE: //flash blue
+      return(COLOR_BLUE);
+    case PATTERN_FPINK: //flash pink
+      return(COLOR_PINK);
+    case PATTERN_FORANGE: //flash orange
+      return(COLOR_ORANGE);
+    case PATTERN_RED: //error solid red
+      return(COLOR_RED);
+    case PATTERN_REDBLUE: //error half red/blue
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_BLUE);
+    case PATTERN_REDORANGE: //error half red/yellow
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_ORANGE);
+    case PATTERN_REDGREEN: //error half reg/green
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_GREEN);
+    case PATTERN_REDPURPLE: //error half reg/purple
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_PURPLE);
+    case PATTERN_REDPINK: //error half red/pink
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_PINK);
+    default: //invalid color code
+      if (pos < NUM_LEDS/2) 
+        return(COLOR_RED);
+      else
+        return(COLOR_WHITE);
+  }
+}
+void segment(uint8_t pattern, uint32_t c2, int start, int end) {
   // turn all LEDs off (c2)
+  
   for(uint16_t i=0; i<strip.numPixels(); i++) {
      strip.setPixelColor(i,c2);
   }
@@ -284,16 +401,18 @@ void segment(uint32_t c1, uint32_t c2, int start, int end) {
   for(int i=start; i<end+1; i++) {
     int pix = i;
     if (i < 0) i+=strip.numPixels();
-    strip.setPixelColor(i % strip.numPixels(), c1);
+    strip.setPixelColor(i % strip.numPixels(), flag2color(pattern, i));
   }
   strip.show();
 }
 
-void spinner(uint32_t c, uint8_t from, uint8_t reduce) {
+void spinner(uint8_t pattern, uint8_t from, uint8_t reduce) {
   // stating at LED from, fades from c to black, by reduce each LED
-  uint32_t c1 = c;
+  
+  uint32_t c1 = 0;
   int r;
   for (uint8_t i=0; i<strip.numPixels(); i++) {
+    uint32_t c = flag2color(pattern, i+from);
     r = (23 - i);
     c1 = strip.Color(
       clamp(((c >> 16) & 0xff) * r / 23, 0, 255),
@@ -305,6 +424,24 @@ void spinner(uint32_t c, uint8_t from, uint8_t reduce) {
     strip.setPixelColor(pix % strip.numPixels(), c1);
   }
   strip.show();
+}
+
+void flash(uint8_t from){
+  uint8_t onoff = from; //slow down flashing by 4x to prevent nightclub strobing
+  Serial.print("FLASH");
+  Serial.println(onoff);
+  if (onoff % 2){ //on
+    for (uint8_t i=0; i<strip.numPixels(); i++) {
+      uint32_t c = flag2color(colorPattern, i);
+      strip.setPixelColor(i, c);
+    }
+  }else{ //off
+    for (uint8_t i=0; i<strip.numPixels(); i++) {
+      strip.setPixelColor(i, COLOR_OFF);
+    }
+  }
+  strip.show();  
+  
 }
 
 void animation() {
@@ -320,8 +457,25 @@ void animation() {
       } else {
         pos = 0;
       }
-
-      segment(strip.Color(0,255,0), 0, 4, pos + 4);
+        switch (colorPattern) {
+          case 0 ... 7: 
+            spinner(colorPattern, pos, 5);
+            break;
+         case PATTERN_RAINBOW :
+         case PATTERN_PYB :
+            spinner(colorPattern, pos, 0); //spinner works with no fade reduction
+            break;
+         case 24 ... 31:
+           flash(pos);
+           break;
+         case 32 ... 40 : //half colours
+           spinner(colorPattern, 0, 0); //spiral with no movement
+           break;
+         default : //shouldnt happen
+           spinner(colorPattern, pos, 5);
+           break;     
+       }
+      //segment(colorPattern, 0, 4, pos + 4);
 
       //reset pos to top postion, so that spinner always resumes from right position
       pos = 4;
@@ -345,12 +499,16 @@ void animation() {
         if (pos < 0) pos = 23;
      }
   
-     uint32_t c = strip.Color(150,60,0);
+     colorPattern = PATTERN_ORANGE;
      if (doorOpen) {
-        c = strip.Color(150,0,0);  // red if doorOpen
+        colorPattern = PATTERN_RED;  // red if doorOpen
      }
-  
-     spinner(c, pos, 5);
+
+     //do appropriate animation
+     spinner(colorPattern, pos, 5);
+     
+     
+     //Serial.print(F("Setting Pattern to"));  Serial.println(colorPattern);
    }
 }
 
@@ -361,13 +519,13 @@ void animation() {
 // Maglock connected to NC terminals on relay, output:  true = unlocked, false = locked
 
 // duration in milliseconds
-void unlockDoor(unsigned long duration) {
+void unlockDoor(unsigned long duration, uint8_t color_flag) {
   unlockCount++;
   Serial.print(F("Door Unlocked, "));  Serial.println(unlockCount);
   digitalWrite(OUTPUT_PIN, LOW);
   outputEnableTimer = millis() + duration;
   // green when unlocked
-  colorWipe(strip.Color(0, 255, 0), 1);
+  colorWipe(color_flag);
 }
 
 void lockDoor() {
@@ -663,7 +821,7 @@ void resetPN532() {
   // added ref issue: https://github.com/Seeed-Studio/PN532/issues/44
   nfc.setPassiveActivationRetries(0x19);
 
-  nfc.getGeneralStatus();
+  nfc.SAMConfig();
   nfc.getFirmwareVersion();
 
   //Serial.println(nfc.getGeneralStatus());
@@ -681,7 +839,7 @@ void cardAvailable() {
 void keepRFIDConnected() {
 
    // seem to need to call this before a getFirmwareVersion to get reliable response!?!
-   nfc.getGeneralStatus();
+   nfc.SAMConfig();
 
    uint32_t versiondata = nfc.getFirmwareVersion();
 
@@ -718,7 +876,7 @@ void lookForCard() {
   success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, PN532_READ_TIMEOUT);
 
   if (success && (memcmp(luid, uid, uidLength)!=0 || (millis() > lastChecked + CARD_DEBOUNCE_DELAY))) {
-
+    uint8_t flags = 0xFC; //default value meaning no info found
     // store the uid to permit debounce
     memcpy(luid, uid, uidLength);
 
@@ -731,17 +889,18 @@ void lookForCard() {
 
     // check cache
     item = getTokenFromCache(&uid, uidLength);
-
     //if not found, then query server and add to cache if has permission
     if (item == NULL) {
       Serial.println(F("Not in cache"));
       
       // bright orange - found card, querying server
-      colorWipe(strip.Color(255, 128, 0), 0);
-    
-      uint8_t flags = queryServer();
+      colorWipe(PATTERN_ORANGE);
+      flags = queryServer();
+      Serial.println("gotflags");
       Serial.println(flags);
-      if ((flags > 0) && (flags != TOKEN_ERROR)) {
+      uint8_t flag_access = flags & 0x01; //first bit is access allowed
+      uint8_t flag_cache  = (flags & 0x02) >> 1; //second bit is cache           
+      if ((flag_access) && (flag_cache)) { //if given access and is a token to be cached (weekend tier not to be cached)
         item = addTokenToCache(&uid, uidLength, flags);
       }
     } else {
@@ -751,19 +910,21 @@ void lookForCard() {
         removeTokenFromCache(item);
         item = NULL;
       }
+      flags = item->flags;
     }
 
     // if got valid details and permission given, then open/power the thing, if not, don't
-    if (item != NULL) {
-
+    if (flags != 0xFC) {
+      uint8_t flag_access = (flags & 0x02) >> 1; //second bit is access allowed
+      uint8_t flag_color = (flags & 0xFC) >> 2; //remaining bits for colour code
       // take action and send log to server
-      if (item->flags && TOKEN_ACCESS) {
+      if (flag_access) {
         // permission given, so open/power the thing
         item->count++;
 
         Serial.print(F("Permission granted: "));
         Serial.println(item->count);
-        unlockDoor(OUTPUT_ENABLE_DURATION);
+        unlockDoor(OUTPUT_ENABLE_DURATION, flag_color);
 
         sendLogMsg(F("Permission%20granted%20to:%20"), tokenStr);
         
@@ -774,19 +935,19 @@ void lookForCard() {
         Serial.println(F("Permission denied"));
         sendLogMsg(F("Permission%20denied%20to:%20"), tokenStr);
 
-        // red
-        colorWipe(strip.Color(255, 0, 0), 0);
+        // show error code (color sent from server or esp8266)
+        colorWipe(flag_color);
 
         delay(1000);
       }
 
     } else {
       // permission denied!
-        Serial.println(F("Permission denied"));
+        Serial.println(F("No Response"));
         sendLogMsg(F("Permission%20denied%20to:%20"), tokenStr);
 
-        // red
-        colorWipe(strip.Color(255, 0, 0), 0);
+        // 
+        colorWipe(PATTERN_REDGREEN); //half red/green 
 
         delay(1000);
     }
@@ -875,7 +1036,7 @@ void monitorExitButton() {
     if (exitPressed) {
       exitPressed = false;
       Serial.println("Exit button pressed");
-      unlockDoor(OUTPUT_ENABLE_DURATION);
+      unlockDoor(OUTPUT_ENABLE_DURATION, COLOR_GREEN);
     }
 }
 
@@ -889,7 +1050,7 @@ void monitorDoorbell() {
 
   // turn doorbell on?
   if (bellPressed) {
-    colorWipe(strip.Color(0, 0, 255), 0);
+    colorWipe(PATTERN_BLUE);
     
     Serial.println(F("Bing bong"));
 
@@ -935,7 +1096,7 @@ uint8_t handleSerial() {
       // reply to query?
       if (inputString[0] == '?') {
         // look at second character to see if door should open!
-        flags = (uint8_t)inputString[1] - 48;  // convert from ascii representation
+        flags = (uint8_t)inputString[1];// - 48;  // convert from ascii representation
       } else if (inputString[0] == '~') {
         // received reply to heartbeat
         lastHB = millis();
@@ -1006,7 +1167,7 @@ void setup(void) {
 
   Serial.println(F("Starting fancy LEDs..."));
   strip.begin();
-  colorWipe(strip.Color(80, 80, 80), 50);
+  colorWipe(PATTERN_WHITE);
 
   Serial.println(F("Connecting to ESP..."));
   ESPSerial.begin(9600);
@@ -1015,19 +1176,15 @@ void setup(void) {
   Serial.println(F("Configuring tasks..."));
   runner.init();
   runner.addTask(ESPConnectionTask);
-  //runner.addTask(lookForCardTask);
   runner.addTask(displayUptimeTask);
   runner.addTask(syncCacheTask);
   runner.addTask(RFIDConnectionTask);
-  //runner.addTask(monitorDoorSensorTask);
 
   // Enable tasks
   ESPConnectionTask.enable();
   RFIDConnectionTask.enable();
-  //lookForCardTask.enableDelayed(500);
   displayUptimeTask.enable();
   syncCacheTask.enable();
-  //monitorDoorSensorTask.enable();
 
   Serial.println(F("Ready"));
   Serial.println();
