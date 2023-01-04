@@ -4,9 +4,9 @@
 //#include <registers.h>
 
 #include <Wire.h>
-//#include "PN532_I2C.h"
-//#include <PN532.h> //replaced by newer one below
-#include <Adafruit_PN532.h>
+#include <PN532_I2C.h>
+#include <PN532.h> //replaced by newer one below
+//#include <Adafruit_PN532.h>
 #include <TaskScheduler.h>
 #include <EEPROM.h>
 #include <Adafruit_NeoPixel.h>
@@ -30,11 +30,11 @@
 #define PN532_RESET_PIN   4
 //#define PN532_IRQ_PIN     ?
 #define DOOR_SENSOR_PIN   5
-#define OUTPUT_PIN        6
+#define OUTPUT_PIN        9
 #define EXIT_BUTTON_PIN   3  // normally open, pulled high
-#define NEOPIXEL_PIN      8
+#define NEOPIXEL_PIN      7
 #define DOORBELL_PIN      A0
-#define DOORBELL_ALARM_PIN  9
+#define DOORBELL_ALARM_PIN  6
 #define BUILTIN_LED       13
 #define ESP_RESET_PIN     12
 
@@ -162,13 +162,13 @@ void syncEEPROM();
  *  Global Variables / Objects
  * ========================================================================== */
 
-//PN532_I2C pn532i2c(Wire, I2C_DATA_PIN, I2C_CLOCK_PIN);  // data, clock
-Adafruit_PN532 nfc(I2C_DATA_PIN, PN532_RESET_PIN);
-//PN532 nfc(pn532i2c);
+PN532_I2C pn532i2c(Wire, I2C_DATA_PIN, I2C_CLOCK_PIN);  // data, clock
+//Adafruit_PN532 nfc(I2C_DATA_PIN, I2C_CLOCK_PIN);
+PN532 nfc(pn532i2c);
 uint16_t PN532Resets = 0;  // reset counter
 
 // ESP serial
-SoftwareSerial ESPSerial(10, 11);
+SoftwareSerial ESPSerial(11, 10);
 unsigned long lastHB;
 
 // the cache
@@ -210,7 +210,7 @@ unsigned long doorbellTimer = 0;
 boolean doorbellOn = false;
 
 // token as hex string
-char tokenStr[14];
+char tokenStr[15]; ///14 + string terminator
 
 /* ========================================================================== *
  *  Utility Functions
@@ -233,6 +233,7 @@ void updateTokenStr(const uint8_t *data, const uint32_t numBytes) {
         tokenStr[b] = 0;
         b++;
   }
+  tokenStr[14] = "\0"; //strinig terminator
 }
 
 void uptime(Stream& serial, boolean display = true)
@@ -565,7 +566,6 @@ TOKEN_CACHE_ITEM* getTokenFromCache(TOKEN* token, uint8_t length) {
       break;
     }
   }
-
   return item;
 }
 
@@ -645,7 +645,8 @@ void initCache() {
     Serial.print(cacheSize);
     Serial.println(F(" items"));
   }
-
+  if (cacheSize > 10){
+    cacheSize = 10;}
   // read token items from cache
   uint8_t i = 0, j = 0;
   uint16_t addr = 2;
@@ -660,7 +661,9 @@ void initCache() {
 
     // flags
     cache[i].flags = EEPROM.read(addr + 8);
-
+    if ((cache[i].flags && 0x02) == 0) {//if an invalid token in cache shouldnt happen but  does
+      break;
+    }
     updateTokenStr(cache[i].token, cache[i].length);
 
     Serial.print(' ');
@@ -781,7 +784,7 @@ uint8_t queryServer() {
    ESPSerial.print('\n');
 
    // wait for reply, no more than 4 seconds
-   unsigned long giveUp = millis() + 4000;
+   unsigned long giveUp = millis() + 8000;
  
    do {
       flags = handleSerial();
@@ -858,7 +861,16 @@ void keepRFIDConnected() {
       RFIDConnectionTask.setInterval(RFID_CONNECTION_TASK_INTERVAL);
    }
 }
+// void printtokenstr(){
+//     // String result = "";
+//     // int length = 
+//     for(int i = 0; i < 14; i++){
+//       Serial.print(tokenStr[i]);
+//       // result += tokenStr[i];
+//     }
+//     Serial.println("");
 
+// }
 // Task to poll for card
 void lookForCard() {
   uint8_t success;
@@ -874,18 +886,20 @@ void lookForCard() {
   // 'uid' will be populated with the UID, and uidLength will indicate
   // if the uid is 4 bytes (Mifare Classic) or 7 bytes (Mifare Ultralight)
   success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, PN532_READ_TIMEOUT);
-
+  
   if (success && (memcmp(luid, uid, uidLength)!=0 || (millis() > lastChecked + CARD_DEBOUNCE_DELAY))) {
     uint8_t flags = 0xFC; //default value meaning no info found
     // store the uid to permit debounce
     memcpy(luid, uid, uidLength);
 
     lastChecked = millis();
-
     updateTokenStr(uid, uidLength);
     
     Serial.print(F("Card found: "));  Serial.println(tokenStr);
+    //printtokenstr();
+    Serial.println("");
     Serial.println(uidLength);
+    Serial.println(sizeof(tokenStr));
 
     // check cache
     item = getTokenFromCache(&uid, uidLength);
